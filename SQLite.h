@@ -13,6 +13,15 @@
 #define VERIFY_(result, expression) (expression)
 #endif // _DEBUG
 
+enum class Type
+{
+	Integer = SQLITE_INTEGER,
+	Float = SQLITE_FLOAT,
+	Blob = SQLITE_BLOB,
+	Null = SQLITE_NULL,
+	Text = SQLITE_TEXT
+};
+
 struct Exception
 {
 	int Result = 0;
@@ -24,6 +33,7 @@ struct Exception
 
 class Connection
 {
+private:
 	struct ConnectionHandleTraits : HandleTraits<sqlite3*>
 	{
 		static void Close(Type value) noexcept
@@ -93,6 +103,61 @@ public:
 	{
 		InternalOpen(sqlite3_open16, filename);
 	}
+
+	long long RowId() const noexcept
+	{
+		return sqlite3_last_insert_rowid(GetAbi());
+	}
+
+	template <typename F>
+	void Profile(F callback, void* const context = nullptr)
+	{
+		sqlite3_profile(GetAbi(), callback, context);
+	}
+};
+
+class Backup
+{
+private:
+	struct BackupHandleTraits : HandleTraits<sqlite3_backup*>
+	{
+		static void Close(Type value) noexcept
+		{
+			sqlite3_backup_finish(value);
+		}
+	};
+	
+	using BackupHandle = Handle<BackupHandleTraits>;
+	BackupHandle m_handle;
+	Connection const* m_destination = nullptr;
+
+public:
+	Backup(Connection const& destination, Connection const& source, char const* const destinationName = "main", char const* const sourceName = "main") :
+		m_handle(sqlite3_backup_init(destination.GetAbi(), destinationName, source.GetAbi(), sourceName)), m_destination(&destination)
+	{
+		if (!m_handle)
+		{
+			destination.ThrowLastError();
+		}
+	}
+
+	sqlite3_backup* GetAbi() const noexcept
+	{
+		return m_handle.Get();
+	}
+
+	bool Step(int const pages = -1)
+	{
+		int const result = sqlite3_backup_step(GetAbi(), pages);
+
+		if (result == SQLITE_OK)
+			return true;
+		if (result == SQLITE_DONE)
+			return false;
+
+		m_handle.Reset();
+		m_destination->ThrowLastError();
+	}
 };
 
 template<typename T>
@@ -123,6 +188,11 @@ struct Reader
 		// bite 16 func doesn't return the length of characters. Returns the bites again, so it needs to be devided by size of a characters
 		return sqlite3_column_bytes16(static_cast<T const*>(this)->GetAbi(), column) / sizeof(wchar_t);
 	}
+
+	Type GetType(int const column = 0) const noexcept
+	{
+		return static_cast<Type>(sqlite3_column_type(static_cast<T const*>(this)->GetAbi(), column));
+	}
 };
 
 class Row : public Reader<Row>
@@ -146,7 +216,7 @@ private:
 	{
 		static void Close(Type value) noexcept
 		{
-			VERIFY_(SQLITE_OK, sqlite3_finalize(value));
+			sqlite3_finalize(value);
 		}
 	};
 
@@ -284,6 +354,16 @@ public:
 	void BindAll(Values && ... values) const
 	{
 		InternalBind(1, std::forward<Values>(values) ...);
+	}
+
+	template <typename ... Values>
+	void Reset(Values && ... values) const
+	{
+		if (SQLITE_OK != sqlite3_reset(GetAbi()))
+		{
+			ThrowLastError();
+		}
+		BindAll(values ...);
 	}
 };
 

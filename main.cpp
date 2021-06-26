@@ -1,21 +1,46 @@
 #include <stdio.h>
 #include "SQLite.h"
 
+static char const* TypeName(Type const type)
+{
+	switch (type)
+	{
+	case Type::Integer: return "Integer";
+	case Type::Float: return "Float";
+	case Type::Blob: return "Blob";
+	case Type::Null: return "Null";
+	case Type::Text: return "Text";
+	}
+
+	ASSERT(false);
+	return "Invalid";
+}
+
+static void SaveToDisk(Connection const& source, char const* const filename)
+{
+	Connection destination(filename);
+	Backup backup(destination, source);
+	backup.Step();
+}
+
 int main()
 {
 	try
 	{
 		Connection connection = Connection::Memory();
 
-		Execute(connection, "CREATE TABLE Users (Name)");
+		Statement statement(connection, "INSERT INTO Things values (?)");
 
-		Execute(connection, "INSERT INTO Users values(?)", "Joe");
-		Execute(connection, "INSERT INTO Users values(?)", "Beth");
-
-		for (Row row : Statement(connection, "SELECT Name FROM Users"))
+		for (int i = 0; i != 100000; ++i)
 		{
-			printf("%s\n", row.GetString());
+			statement.Reset(i);
+			statement.Execute();
 		}
+
+		Execute(connection, "DELETE FROM Things WHERE Content > 10");
+		Execute(connection, "vacuum");
+
+		SaveToDisk(connection, "path");
 	}
 	catch (Exception const& e)
 	{
